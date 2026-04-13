@@ -46,7 +46,7 @@ class DataLoader:
         if not os.path.exists(filepath):
             raise FileNotFoundError(f"Data file not found: {filepath}")
 
-        df = pd.read_csv(filepath, parse_dates=True, infer_datetime_format=True)
+        df = pd.read_csv(filepath, parse_dates=True)
         logger.info("Loaded %d rows with %d columns", len(df), len(df.columns))
         return df
 
