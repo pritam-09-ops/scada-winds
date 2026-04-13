@@ -93,11 +93,143 @@ def _split_data(
 
 
 # ---------------------------------------------------------------------------
+# Pipeline step helpers (keep `train` readable)
+# ---------------------------------------------------------------------------
+
+
+def _load_and_engineer(
+    config_path: str,
+    raw_data_path: str,
+    target_col: str,
+) -> Tuple[np.ndarray, np.ndarray, list]:
+    """Load data, preprocess, and run feature engineering.
+
+    Returns:
+        Tuple of ``(X, y, feature_cols)``.
+    """
+    loader = DataLoader(config_path)
+    df = loader.preprocess(raw_data_path)
+
+    engineer = FeatureEngineer(config_path)
+    datetime_col = next(
+        (c for c in df.columns if "time" in c.lower() or "date" in c.lower()), None
+    )
+    df = engineer.engineer_features(df, datetime_col=datetime_col)
+    logger.info("Dataset shape after feature engineering: %s", df.shape)
+
+    if target_col not in df.columns:
+        raise ValueError(
+            f"Target column '{target_col}' not found. "
+            "Check 'features.target_column' in config.yaml."
+        )
+
+    feature_cols = [
+        c
+        for c in df.select_dtypes(include=[np.number]).columns
+        if c != target_col
+    ]
+    X = df[feature_cols].values
+    y = df[target_col].values
+    logger.info("Features: %d  |  Samples: %d", len(feature_cols), len(X))
+    return X, y, feature_cols
+
+
+def _scale_and_save(
+    X_train: np.ndarray,
+    X_val: np.ndarray,
+    X_test: np.ndarray,
+    models_dir: str,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Fit a StandardScaler on training data and persist it."""
+    scaler = StandardScaler()
+    X_train_sc = scaler.fit_transform(X_train)
+    X_val_sc = scaler.transform(X_val)
+    X_test_sc = scaler.transform(X_test)
+
+    os.makedirs(models_dir, exist_ok=True)
+    scaler_path = os.path.join(models_dir, "feature_scaler.pkl")
+    joblib.dump(scaler, scaler_path)
+    logger.info("Feature scaler saved to %s", scaler_path)
+    return X_train_sc, X_val_sc, X_test_sc
+
+
+def _train_xgboost(
+    config_path: str,
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    X_val: np.ndarray,
+    y_val: np.ndarray,
+    X_test: np.ndarray,
+    y_test: np.ndarray,
+    models_dir: str,
+    best_params: dict | None = None,
+) -> Tuple[XGBoostModel, dict]:
+    """Train, evaluate, and save the XGBoost model."""
+    logger.info("--- XGBoost ---")
+    model = XGBoostModel(config_path)
+    model.build(params=best_params)
+    model.train(X_train, y_train, X_val, y_val)
+    metrics = model.evaluate(X_test, y_test)
+    logger.info(
+        "XGBoost test — R²: %.4f  RMSE: %.2f kW",
+        metrics["r2_score"], metrics["rmse"],
+    )
+    model.save(os.path.join(models_dir, "xgboost_model.json"))
+    return model, metrics
+
+
+def _train_lstm(
+    config_path: str,
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    X_val: np.ndarray,
+    y_val: np.ndarray,
+    X_test: np.ndarray,
+    y_test: np.ndarray,
+    models_dir: str,
+) -> Tuple[LSTMModel, dict]:
+    """Train, evaluate, and save the LSTM model."""
+    logger.info("--- LSTM ---")
+    model = LSTMModel(config_path)
+    model.train(X_train, y_train, X_val, y_val)
+    metrics = model.evaluate(X_test, y_test)
+    logger.info(
+        "LSTM test — R²: %.4f  RMSE: %.2f kW",
+        metrics["r2_score"], metrics["rmse"],
+    )
+    model.save(os.path.join(models_dir, "lstm_model.keras"))
+    return model, metrics
+
+
+def _run_feature_importance(
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    feature_cols: list,
+    target_col: str,
+    logs_dir: str,
+) -> None:
+    """Compute and plot Random Forest feature importances."""
+    logger.info("--- Feature Importance ---")
+    fi_analyzer = FeatureImportanceAnalyzer()
+    fi_analyzer.fit(
+        pd.DataFrame(X_train, columns=feature_cols),
+        pd.Series(y_train, name=target_col),
+    )
+    fi_analyzer.plot(
+        save_path=os.path.join(logs_dir, "feature_importance.png"),
+        show=False,
+    )
+    logger.info("Top 5 predictive features:")
+    for name, score in fi_analyzer.top_features(5):
+        logger.info("  %-40s %.4f", name, score)
+
+
+# ---------------------------------------------------------------------------
 # Main training function
 # ---------------------------------------------------------------------------
 
 
-def train(config_path: str = "config.yaml", data_path: str = None, run_optuna: bool = True) -> None:  # noqa: C901
+def train(config_path: str = "config.yaml", data_path: str = None, run_optuna: bool = True) -> None:
     """End-to-end training pipeline.
 
     Args:
@@ -132,40 +264,9 @@ def train(config_path: str = "config.yaml", data_path: str = None, run_optuna: b
     logger.info("Data:   %s", raw_data_path)
 
     # ------------------------------------------------------------------
-    # Load & preprocess data
+    # Load, preprocess, and engineer features
     # ------------------------------------------------------------------
-    loader = DataLoader(config_path)
-    df = loader.preprocess(raw_data_path)
-
-    # ------------------------------------------------------------------
-    # Feature engineering
-    # ------------------------------------------------------------------
-    engineer = FeatureEngineer(config_path)
-    datetime_col = next(
-        (c for c in df.columns if "time" in c.lower() or "date" in c.lower()), None
-    )
-    df = engineer.engineer_features(df, datetime_col=datetime_col)
-    logger.info("Dataset shape after feature engineering: %s", df.shape)
-
-    # ------------------------------------------------------------------
-    # Prepare feature / target matrices
-    # ------------------------------------------------------------------
-    if target_col not in df.columns:
-        raise ValueError(
-            f"Target column '{target_col}' not found in the dataset. "
-            "Check 'features.target_column' in config.yaml."
-        )
-
-    # Drop non-numeric and the target column
-    feature_cols = [
-        c
-        for c in df.select_dtypes(include=[np.number]).columns
-        if c != target_col
-    ]
-    X = df[feature_cols].values
-    y = df[target_col].values
-
-    logger.info("Features: %d  |  Samples: %d", len(feature_cols), len(X))
+    X, y, feature_cols = _load_and_engineer(config_path, raw_data_path, target_col)
 
     # ------------------------------------------------------------------
     # Train / val / test split
@@ -179,20 +280,14 @@ def train(config_path: str = "config.yaml", data_path: str = None, run_optuna: b
     )
 
     # ------------------------------------------------------------------
-    # Scale features (for XGBoost this is optional but helps LSTM)
+    # Scale features
     # ------------------------------------------------------------------
-    scaler = StandardScaler()
-    X_train_sc = scaler.fit_transform(X_train)
-    X_val_sc = scaler.transform(X_val)
-    X_test_sc = scaler.transform(X_test)
-
-    os.makedirs(models_dir, exist_ok=True)
-    scaler_path = os.path.join(models_dir, "feature_scaler.pkl")
-    joblib.dump(scaler, scaler_path)
-    logger.info("Feature scaler saved to %s", scaler_path)
+    X_train_sc, X_val_sc, X_test_sc = _scale_and_save(
+        X_train, X_val, X_test, models_dir
+    )
 
     # ------------------------------------------------------------------
-    # (Optional) Optuna hyperparameter optimisation for XGBoost
+    # (Optional) Optuna hyperparameter optimisation
     # ------------------------------------------------------------------
     best_xgb_params = None
     if run_optuna:
@@ -202,31 +297,16 @@ def train(config_path: str = "config.yaml", data_path: str = None, run_optuna: b
         logger.info("Best XGBoost params: %s", best_xgb_params)
 
     # ------------------------------------------------------------------
-    # Train XGBoost
+    # Train individual models
     # ------------------------------------------------------------------
-    logger.info("--- XGBoost ---")
-    xgb_model = XGBoostModel(config_path)
-    xgb_model.build(params=best_xgb_params)
-    xgb_model.train(X_train_sc, y_train, X_val_sc, y_val)
-    xgb_metrics = xgb_model.evaluate(X_test_sc, y_test)
-    logger.info(
-        "XGBoost test — R²: %.4f  RMSE: %.2f kW",
-        xgb_metrics["r2_score"], xgb_metrics["rmse"],
+    xgb_model, xgb_metrics = _train_xgboost(
+        config_path, X_train_sc, y_train, X_val_sc, y_val,
+        X_test_sc, y_test, models_dir, best_xgb_params,
     )
-    xgb_model.save(os.path.join(models_dir, "xgboost_model.json"))
-
-    # ------------------------------------------------------------------
-    # Train LSTM
-    # ------------------------------------------------------------------
-    logger.info("--- LSTM ---")
-    lstm_model = LSTMModel(config_path)
-    lstm_model.train(X_train_sc, y_train, X_val_sc, y_val)
-    lstm_metrics = lstm_model.evaluate(X_test_sc, y_test)
-    logger.info(
-        "LSTM test — R²: %.4f  RMSE: %.2f kW",
-        lstm_metrics["r2_score"], lstm_metrics["rmse"],
+    lstm_model, lstm_metrics = _train_lstm(
+        config_path, X_train_sc, y_train, X_val_sc, y_val,
+        X_test_sc, y_test, models_dir,
     )
-    lstm_model.save(os.path.join(models_dir, "lstm_model.keras"))
 
     # ------------------------------------------------------------------
     # Ensemble evaluation
@@ -246,19 +326,7 @@ def train(config_path: str = "config.yaml", data_path: str = None, run_optuna: b
     # ------------------------------------------------------------------
     # Feature importance analysis
     # ------------------------------------------------------------------
-    logger.info("--- Feature Importance ---")
-    fi_analyzer = FeatureImportanceAnalyzer()
-    fi_analyzer.fit(
-        pd.DataFrame(X_train, columns=feature_cols),
-        pd.Series(y_train, name=target_col),
-    )
-    fi_analyzer.plot(
-        save_path=os.path.join(logs_dir, "feature_importance.png"),
-        show=False,
-    )
-    logger.info("Top 5 predictive features:")
-    for name, score in fi_analyzer.top_features(5):
-        logger.info("  %-40s %.4f", name, score)
+    _run_feature_importance(X_train, y_train, feature_cols, target_col, logs_dir)
 
     # ------------------------------------------------------------------
     # Summary

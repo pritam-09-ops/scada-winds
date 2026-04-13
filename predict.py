@@ -158,7 +158,11 @@ def make_predictions(
     )
     predictions = ensemble.predict(X)
 
-    # Simple confidence interval: ±5% as a rough heuristic
+    # Simple confidence interval: ±5% as a rough heuristic.
+    # NOTE: This is NOT a statistically derived prediction interval.
+    # It does not reflect actual model uncertainty; techniques such as
+    # conformal prediction, quantile regression, or bootstrap ensembles
+    # would be required for statistically valid bounds.
     ci_half = np.abs(predictions) * 0.05
     result = pd.DataFrame(
         {

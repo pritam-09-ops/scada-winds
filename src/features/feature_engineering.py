@@ -39,12 +39,19 @@ class FeatureEngineer:
     def derive_wind_power_density(self, df: pd.DataFrame) -> pd.DataFrame:
         """Derive Wind Power Density as a cubic function of wind speed.
 
-        Formula: P = 0.5 × ρ × A × v³
+        Formula: P_wind = 0.5 × ρ × A × v³
 
         Where:
             ρ  = air density (kg/m³)
             A  = rotor swept area (m²)
             v  = wind speed (m/s)
+
+        Note:
+            This represents the *theoretical* kinetic power available in the
+            wind, not the actual turbine output.  Real turbine power is limited
+            by the Betz limit (Cp_max ≈ 0.593) and mechanical/electrical
+            losses.  The ``wind_power_density`` feature therefore captures the
+            aerodynamic forcing term rather than the electrical yield.
 
         Args:
             df: Input DataFrame containing a wind-speed column.
