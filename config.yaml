@@ -1,0 +1,25 @@
+data_paths:
+  training_data: '/path/to/training_data.csv'
+  validation_data: '/path/to/validation_data.csv'
+  test_data: '/path/to/test_data.csv'
+
+xgboost_hyperparameters:
+  max_depth: 6
+  learning_rate: 0.1
+  n_estimators: 100
+  gamma: 0.1
+  min_child_weight: 1
+
+lstm_settings:
+  units: 50
+  dropout: 0.2
+  batch_size: 32
+  epochs: 100
+
+optuna_optimization:
+  n_trials: 100
+  direction: 'maximize'
+
+target_metrics:
+  R2: 0.989
+  RMSE: 35.7 kW
