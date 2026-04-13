@@ -45,6 +45,7 @@ from src.models.lstm_model import LSTMModel
 from src.models.xgboost_model import XGBoostModel
 from src.optimization.optuna_tuner import OptunaTuner
 from src.utils.data_loader import DataLoader
+from src.utils.results_exporter import generate_all_results
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -101,11 +102,11 @@ def _load_and_engineer(
     config_path: str,
     raw_data_path: str,
     target_col: str,
-) -> Tuple[np.ndarray, np.ndarray, list]:
+) -> Tuple[np.ndarray, np.ndarray, list, pd.DataFrame]:
     """Load data, preprocess, and run feature engineering.
 
     Returns:
-        Tuple of ``(X, y, feature_cols)``.
+        Tuple of ``(X, y, feature_cols, engineered_df)``.
     """
     loader = DataLoader(config_path)
     df = loader.preprocess(raw_data_path)
@@ -131,7 +132,7 @@ def _load_and_engineer(
     X = df[feature_cols].values
     y = df[target_col].values
     logger.info("Features: %d  |  Samples: %d", len(feature_cols), len(X))
-    return X, y, feature_cols
+    return X, y, feature_cols, df
 
 
 def _scale_and_save(
@@ -266,7 +267,7 @@ def train(config_path: str = "config.yaml", data_path: str = None, run_optuna: b
     # ------------------------------------------------------------------
     # Load, preprocess, and engineer features
     # ------------------------------------------------------------------
-    X, y, feature_cols = _load_and_engineer(config_path, raw_data_path, target_col)
+    X, y, feature_cols, engineered_df = _load_and_engineer(config_path, raw_data_path, target_col)
 
     # ------------------------------------------------------------------
     # Train / val / test split
@@ -278,6 +279,18 @@ def train(config_path: str = "config.yaml", data_path: str = None, run_optuna: b
         "Split — train: %d  val: %d  test: %d",
         len(X_train), len(X_val), len(X_test),
     )
+
+    # Build per-row split labels aligned with the full dataset
+    n_total = len(X)
+    split_labels = np.empty(n_total, dtype=object)
+    # Reproduce the split indices so labels line up with engineered_df rows.
+    idx_all = np.arange(n_total)
+    idx_tmp, idx_test = train_test_split(idx_all, test_size=test_size, random_state=random_state)
+    val_rel = val_size / (1.0 - test_size)
+    idx_train, idx_val = train_test_split(idx_tmp, test_size=val_rel, random_state=random_state)
+    split_labels[idx_train] = "train"
+    split_labels[idx_val] = "val"
+    split_labels[idx_test] = "test"
 
     # ------------------------------------------------------------------
     # Scale features
@@ -329,6 +342,47 @@ def train(config_path: str = "config.yaml", data_path: str = None, run_optuna: b
     _run_feature_importance(X_train, y_train, feature_cols, target_col, logs_dir)
 
     # ------------------------------------------------------------------
+    # Generate consolidated CSV + results visualisations
+    # ------------------------------------------------------------------
+    logger.info("--- Results Export ---")
+
+    # Collect full-dataset predictions for the main CSV
+    scaler = joblib.load(os.path.join(models_dir, "feature_scaler.pkl"))
+    X_all_sc = scaler.transform(X)
+
+    xgb_all_preds = xgb_model.predict(X_all_sc)
+    lstm_all_preds = lstm_model.predict(X_all_sc)
+    ens_all_preds = ensemble.predict(X_all_sc)
+
+    # Feature importance dict from the FeatureImportanceAnalyzer reuse
+    fi_analyzer = FeatureImportanceAnalyzer()
+    fi_analyzer.fit(
+        pd.DataFrame(X_train, columns=feature_cols),
+        pd.Series(y_train, name=target_col),
+    )
+    fi_dict = fi_analyzer.get_importances()
+
+    results_dir = config.get("data", {}).get("results_dir", "data/results")
+    main_csv_path = config.get("data", {}).get("main_csv_path", "data/main.csv")
+
+    generate_all_results(
+        raw_df=engineered_df,
+        feature_cols=feature_cols,
+        y_actual=y,
+        xgb_preds=xgb_all_preds,
+        lstm_preds=lstm_all_preds,
+        ensemble_preds=ens_all_preds,
+        xgb_metrics=xgb_metrics,
+        lstm_metrics=lstm_metrics,
+        ensemble_metrics=ens_metrics,
+        feature_importance=fi_dict,
+        split_labels=split_labels,
+        best_xgb_params=best_xgb_params,
+        results_dir=results_dir,
+        main_csv_path=main_csv_path,
+    )
+
+    # ------------------------------------------------------------------
     # Summary
     # ------------------------------------------------------------------
     target_r2 = config.get("target_metrics", {}).get("r2_score", 0.989)
@@ -341,6 +395,8 @@ def train(config_path: str = "config.yaml", data_path: str = None, run_optuna: b
     logger.info("  Ensemble — R²: %.4f  RMSE: %.2f kW", ens_metrics["r2_score"], ens_metrics["rmse"])
     logger.info("  Target   — R²: %.3f  RMSE: %.1f kW", target_r2, target_rmse)
     logger.info("  Models saved in: %s", os.path.abspath(models_dir))
+    logger.info("  Main CSV:        %s", os.path.abspath(main_csv_path))
+    logger.info("  Results dir:     %s", os.path.abspath(results_dir))
     logger.info("=" * 60)
 
 
