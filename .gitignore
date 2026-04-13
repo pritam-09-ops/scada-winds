@@ -25,7 +25,7 @@ build/
 *.ipynb_checkpoints
 
 # Data files (too large for version control)
-data/raw/*.csv
+data/raw/*.parquet
 data/processed/
 *.parquet
 *.h5

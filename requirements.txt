@@ -1,1 +1,14 @@
-xgboost==2.0.3\ntensorflow==2.15.0\nkeras==2.15.0\noptuna==3.4.0\npandas==2.1.3\nnumpy==1.24.3\nscikit-learn==1.3.2\nmatplotlib==3.8.2\nseaborn==0.13.0\njoblib==1.3.2\npyyaml==6.0.1\njupyter==1.0.0\nipython==8.18.1
+xgboost>=2.0.3
+tensorflow>=2.15.0
+keras>=2.15.0
+optuna>=3.4.0
+pandas>=2.1.3
+numpy>=1.24.3
+scikit-learn>=1.3.2
+matplotlib>=3.8.2
+seaborn>=0.13.0
+joblib>=1.3.2
+pyyaml>=6.0.1
+scipy>=1.11.0
+jupyter>=1.0.0
+ipython>=8.18.1
