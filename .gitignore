@@ -1,8 +1,46 @@
-# Python .gitignore
+# Python
 __pycache__/
 *.py[cod]
+*.pyo
+*.pyd
+.Python
 .venv/
+venv/
+env/
 .env
 *.egg-info/
 *.egg
+dist/
+build/
+
+# IDE
 .DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Data files (too large for version control)
+data/raw/*.csv
+data/processed/
+*.parquet
+*.h5
+
+# Trained model binaries
+models/*.json
+models/*.keras
+models/*.pkl
+models/*.h5
+models/*.pt
+
+# Logs
+logs/*.log
+logs/*.png
+
+# Misc
+*.bak
+
