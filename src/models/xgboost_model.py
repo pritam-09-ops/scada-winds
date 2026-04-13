@@ -160,7 +160,7 @@ class XGBoostModel:
         if self.model is None:
             raise RuntimeError("No model to save.")
         os.makedirs(os.path.dirname(filepath) or ".", exist_ok=True)
-        self.model.save_model(filepath)
+        self.model.get_booster().save_model(filepath)
         logger.info("XGBoost model saved to %s", filepath)
 
     def load(self, filepath: str) -> None:
