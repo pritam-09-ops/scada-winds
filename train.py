@@ -1,0 +1,312 @@
+"""Main training pipeline for SCADA wind power prediction.
+
+Steps
+-----
+1. Load and preprocess raw SCADA data
+2. Feature engineering
+3. Split into train / validation / test sets
+4. Train XGBoost with early stopping
+5. Train LSTM with early stopping
+6. (Optional) Optuna hyperparameter optimisation for XGBoost
+7. Ensemble evaluation
+8. Save all models, scalers, and metrics
+
+Usage
+-----
+::
+
+    python train.py                        # uses config.yaml defaults
+    python train.py --config my_config.yaml
+    python train.py --data path/to/data.csv --skip-optuna
+"""
+
+import argparse
+import logging
+import os
+import sys
+from typing import Tuple
+
+import joblib
+import numpy as np
+import pandas as pd
+import yaml
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+
+# ---------------------------------------------------------------------------
+# Ensure the project root is on sys.path when run directly
+# ---------------------------------------------------------------------------
+sys.path.insert(0, os.path.dirname(__file__))
+
+from src.analysis.feature_importance import FeatureImportanceAnalyzer
+from src.features.feature_engineering import FeatureEngineer
+from src.models.ensemble import EnsembleModel
+from src.models.lstm_model import LSTMModel
+from src.models.xgboost_model import XGBoostModel
+from src.optimization.optuna_tuner import OptunaTuner
+from src.utils.data_loader import DataLoader
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  %(levelname)-8s  %(name)s — %(message)s",
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+    ],
+)
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _add_file_handler(logs_dir: str) -> None:
+    os.makedirs(logs_dir, exist_ok=True)
+    fh = logging.FileHandler(os.path.join(logs_dir, "training.log"))
+    fh.setFormatter(
+        logging.Formatter("%(asctime)s  %(levelname)-8s  %(name)s — %(message)s")
+    )
+    logging.getLogger().addHandler(fh)
+
+
+def _split_data(
+    X: np.ndarray,
+    y: np.ndarray,
+    test_size: float,
+    val_size: float,
+    random_state: int,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Split arrays into train / validation / test subsets."""
+    X_tmp, X_test, y_tmp, y_test = train_test_split(
+        X, y, test_size=test_size, random_state=random_state
+    )
+    # val_size is relative to the original dataset → rescale
+    val_rel = val_size / (1.0 - test_size)
+    X_train, X_val, y_train, y_val = train_test_split(
+        X_tmp, y_tmp, test_size=val_rel, random_state=random_state
+    )
+    return X_train, X_val, X_test, y_train, y_val, y_test
+
+
+# ---------------------------------------------------------------------------
+# Main training function
+# ---------------------------------------------------------------------------
+
+
+def train(config_path: str = "config.yaml", data_path: str = None, run_optuna: bool = True) -> None:  # noqa: C901
+    """End-to-end training pipeline.
+
+    Args:
+        config_path: Path to the YAML configuration file.
+        data_path:   Override the data path from the config.
+        run_optuna:  Whether to run Optuna hyperparameter optimisation.
+    """
+    # ------------------------------------------------------------------
+    # Load configuration
+    # ------------------------------------------------------------------
+    with open(config_path, "r") as fh:
+        config = yaml.safe_load(fh)
+
+    training_cfg = config.get("training", {})
+    test_size = training_cfg.get("test_size", 0.2)
+    val_size = training_cfg.get("validation_size", 0.1)
+    random_state = training_cfg.get("random_state", 42)
+    models_dir = training_cfg.get("models_dir", "models/")
+    logs_dir = training_cfg.get("logs_dir", "logs/")
+
+    features_cfg = config.get("features", {})
+    target_col = features_cfg.get("target_column", "LV ActivePower (kW)")
+    raw_data_path = data_path or config.get("data", {}).get(
+        "raw_data_path", "data/raw/wind_power_data.csv"
+    )
+
+    _add_file_handler(logs_dir)
+    logger.info("=" * 60)
+    logger.info("SCADA Wind Power Prediction — Training Pipeline")
+    logger.info("=" * 60)
+    logger.info("Config: %s", config_path)
+    logger.info("Data:   %s", raw_data_path)
+
+    # ------------------------------------------------------------------
+    # Load & preprocess data
+    # ------------------------------------------------------------------
+    loader = DataLoader(config_path)
+    df = loader.preprocess(raw_data_path)
+
+    # ------------------------------------------------------------------
+    # Feature engineering
+    # ------------------------------------------------------------------
+    engineer = FeatureEngineer(config_path)
+    datetime_col = next(
+        (c for c in df.columns if "time" in c.lower() or "date" in c.lower()), None
+    )
+    df = engineer.engineer_features(df, datetime_col=datetime_col)
+    logger.info("Dataset shape after feature engineering: %s", df.shape)
+
+    # ------------------------------------------------------------------
+    # Prepare feature / target matrices
+    # ------------------------------------------------------------------
+    if target_col not in df.columns:
+        raise ValueError(
+            f"Target column '{target_col}' not found in the dataset. "
+            "Check 'features.target_column' in config.yaml."
+        )
+
+    # Drop non-numeric and the target column
+    feature_cols = [
+        c
+        for c in df.select_dtypes(include=[np.number]).columns
+        if c != target_col
+    ]
+    X = df[feature_cols].values
+    y = df[target_col].values
+
+    logger.info("Features: %d  |  Samples: %d", len(feature_cols), len(X))
+
+    # ------------------------------------------------------------------
+    # Train / val / test split
+    # ------------------------------------------------------------------
+    X_train, X_val, X_test, y_train, y_val, y_test = _split_data(
+        X, y, test_size, val_size, random_state
+    )
+    logger.info(
+        "Split — train: %d  val: %d  test: %d",
+        len(X_train), len(X_val), len(X_test),
+    )
+
+    # ------------------------------------------------------------------
+    # Scale features (for XGBoost this is optional but helps LSTM)
+    # ------------------------------------------------------------------
+    scaler = StandardScaler()
+    X_train_sc = scaler.fit_transform(X_train)
+    X_val_sc = scaler.transform(X_val)
+    X_test_sc = scaler.transform(X_test)
+
+    os.makedirs(models_dir, exist_ok=True)
+    scaler_path = os.path.join(models_dir, "feature_scaler.pkl")
+    joblib.dump(scaler, scaler_path)
+    logger.info("Feature scaler saved to %s", scaler_path)
+
+    # ------------------------------------------------------------------
+    # (Optional) Optuna hyperparameter optimisation for XGBoost
+    # ------------------------------------------------------------------
+    best_xgb_params = None
+    if run_optuna:
+        logger.info("Running Optuna hyperparameter optimisation …")
+        tuner = OptunaTuner(config_path)
+        best_xgb_params = tuner.optimize_xgboost(X_train_sc, y_train)
+        logger.info("Best XGBoost params: %s", best_xgb_params)
+
+    # ------------------------------------------------------------------
+    # Train XGBoost
+    # ------------------------------------------------------------------
+    logger.info("--- XGBoost ---")
+    xgb_model = XGBoostModel(config_path)
+    xgb_model.build(params=best_xgb_params)
+    xgb_model.train(X_train_sc, y_train, X_val_sc, y_val)
+    xgb_metrics = xgb_model.evaluate(X_test_sc, y_test)
+    logger.info(
+        "XGBoost test — R²: %.4f  RMSE: %.2f kW",
+        xgb_metrics["r2_score"], xgb_metrics["rmse"],
+    )
+    xgb_model.save(os.path.join(models_dir, "xgboost_model.json"))
+
+    # ------------------------------------------------------------------
+    # Train LSTM
+    # ------------------------------------------------------------------
+    logger.info("--- LSTM ---")
+    lstm_model = LSTMModel(config_path)
+    lstm_model.train(X_train_sc, y_train, X_val_sc, y_val)
+    lstm_metrics = lstm_model.evaluate(X_test_sc, y_test)
+    logger.info(
+        "LSTM test — R²: %.4f  RMSE: %.2f kW",
+        lstm_metrics["r2_score"], lstm_metrics["rmse"],
+    )
+    lstm_model.save(os.path.join(models_dir, "lstm_model.keras"))
+
+    # ------------------------------------------------------------------
+    # Ensemble evaluation
+    # ------------------------------------------------------------------
+    logger.info("--- Ensemble ---")
+    ensemble = EnsembleModel(config_path)
+    ensemble.xgb_model = xgb_model
+    ensemble._xgb_trained = True
+    ensemble.lstm_model = lstm_model
+    ensemble._lstm_trained = True
+    ens_metrics = ensemble.evaluate(X_test_sc, y_test)
+    logger.info(
+        "Ensemble test — R²: %.4f  RMSE: %.2f kW",
+        ens_metrics["r2_score"], ens_metrics["rmse"],
+    )
+
+    # ------------------------------------------------------------------
+    # Feature importance analysis
+    # ------------------------------------------------------------------
+    logger.info("--- Feature Importance ---")
+    fi_analyzer = FeatureImportanceAnalyzer()
+    fi_analyzer.fit(
+        pd.DataFrame(X_train, columns=feature_cols),
+        pd.Series(y_train, name=target_col),
+    )
+    fi_analyzer.plot(
+        save_path=os.path.join(logs_dir, "feature_importance.png"),
+        show=False,
+    )
+    logger.info("Top 5 predictive features:")
+    for name, score in fi_analyzer.top_features(5):
+        logger.info("  %-40s %.4f", name, score)
+
+    # ------------------------------------------------------------------
+    # Summary
+    # ------------------------------------------------------------------
+    target_r2 = config.get("target_metrics", {}).get("r2_score", 0.989)
+    target_rmse = config.get("target_metrics", {}).get("rmse_kw", 35.7)
+
+    logger.info("=" * 60)
+    logger.info("Training complete.")
+    logger.info("  XGBoost  — R²: %.4f  RMSE: %.2f kW", xgb_metrics["r2_score"], xgb_metrics["rmse"])
+    logger.info("  LSTM     — R²: %.4f  RMSE: %.2f kW", lstm_metrics["r2_score"], lstm_metrics["rmse"])
+    logger.info("  Ensemble — R²: %.4f  RMSE: %.2f kW", ens_metrics["r2_score"], ens_metrics["rmse"])
+    logger.info("  Target   — R²: %.3f  RMSE: %.1f kW", target_r2, target_rmse)
+    logger.info("  Models saved in: %s", os.path.abspath(models_dir))
+    logger.info("=" * 60)
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Train SCADA wind power prediction models."
+    )
+    parser.add_argument(
+        "--config",
+        default="config.yaml",
+        help="Path to YAML configuration file (default: config.yaml).",
+    )
+    parser.add_argument(
+        "--data",
+        default=None,
+        help="Override data path from config.",
+    )
+    parser.add_argument(
+        "--skip-optuna",
+        action="store_true",
+        help="Skip Optuna hyperparameter optimisation to speed up training.",
+    )
+    return parser.parse_args()
+
+
+if __name__ == "__main__":
+    args = _parse_args()
+    train(
+        config_path=args.config,
+        data_path=args.data,
+        run_optuna=not args.skip_optuna,
+    )

@@ -1,25 +1,55 @@
-data_paths:
-  training_data: '/path/to/training_data.csv'
-  validation_data: '/path/to/validation_data.csv'
-  test_data: '/path/to/test_data.csv'
+data:
+  raw_data_path: 'data/raw/wind_power_data.csv'
+  processed_data_path: 'data/processed/'
+  missing_value_strategy: 'forward_fill'  # Options: drop, forward_fill, backward_fill
+  outlier_z_score_threshold: 3.0
 
-xgboost_hyperparameters:
-  max_depth: 6
-  learning_rate: 0.1
-  n_estimators: 100
-  gamma: 0.1
+features:
+  air_density: 1.225        # kg/m³ (standard air density at sea level)
+  rotor_area: 7854.0        # m² (π × r², r ≈ 50 m typical turbine)
+  temporal_features: true
+  rolling_windows: [6, 12, 24]
+  target_column: 'LV ActivePower (kW)'
+  wind_speed_column: 'Wind Speed (m/s)'
+  rotor_speed_column: 'Rotor Speed (rpm)'
+  pitch_angle_column: 'Pitch Angle (deg)'
+
+xgboost:
+  n_estimators: 300
+  max_depth: 8
+  learning_rate: 0.05
+  subsample: 0.8
+  colsample_bytree: 0.8
   min_child_weight: 1
+  gamma: 0.0
+  early_stopping_rounds: 50
 
-lstm_settings:
-  units: 50
-  dropout: 0.2
+lstm:
+  units: 128
+  num_layers: 2
+  dropout: 0.3
   batch_size: 32
   epochs: 100
+  sequence_length: 24
+  patience: 10
 
-optuna_optimization:
+optimization:
   n_trials: 100
+  cv_folds: 5
   direction: 'maximize'
+  sampler: 'TPE'
+
+training:
+  test_size: 0.2
+  validation_size: 0.1
+  random_state: 42
+  models_dir: 'models/'
+  logs_dir: 'logs/'
+
+ensemble:
+  xgb_weight: 0.6
+  lstm_weight: 0.4
 
 target_metrics:
-  R2: 0.989
-  RMSE: 35.7 kW
+  r2_score: 0.989
+  rmse_kw: 35.7
