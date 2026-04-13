@@ -93,6 +93,10 @@ def build_main_csv(
     # --- predictions ---------------------------------------------------------
     def _add_pred_cols(prefix: str, preds: np.ndarray) -> None:
         p = preds[:rows]
+        # Confidence interval: ±5% of the absolute predicted value.
+        # NOTE: This is a rough heuristic approximation, not a statistically
+        # derived prediction interval.  For valid uncertainty quantification,
+        # use conformal prediction, quantile regression, or bootstrap methods.
         ci_half = np.abs(p) * 0.05
         df[f"{prefix}_prediction_kw"] = p
         df[f"{prefix}_lower_bound"] = p - ci_half
@@ -337,7 +341,7 @@ def plot_time_series_predictions(
 
     ax.set_xlabel("Sample index")
     ax.set_ylabel("Power (kW)")
-    ax.set_title("Time-Series Predictions vs Actual (test set)")
+    ax.set_title("Time-Series Predictions vs Actual")
     ax.legend(fontsize=9)
     ax.grid(alpha=0.3)
     fig.tight_layout()

@@ -284,11 +284,10 @@ def train(config_path: str = "config.yaml", data_path: str = None, run_optuna: b
     n_total = len(X)
     split_labels = np.empty(n_total, dtype=object)
     # Reproduce the split indices so labels line up with engineered_df rows.
-    from sklearn.model_selection import train_test_split as _tts
     idx_all = np.arange(n_total)
-    idx_tmp, idx_test = _tts(idx_all, test_size=test_size, random_state=random_state)
+    idx_tmp, idx_test = train_test_split(idx_all, test_size=test_size, random_state=random_state)
     val_rel = val_size / (1.0 - test_size)
-    idx_train, idx_val = _tts(idx_tmp, test_size=val_rel, random_state=random_state)
+    idx_train, idx_val = train_test_split(idx_tmp, test_size=val_rel, random_state=random_state)
     split_labels[idx_train] = "train"
     split_labels[idx_val] = "val"
     split_labels[idx_test] = "test"
@@ -348,8 +347,7 @@ def train(config_path: str = "config.yaml", data_path: str = None, run_optuna: b
     logger.info("--- Results Export ---")
 
     # Collect full-dataset predictions for the main CSV
-    import joblib as _joblib
-    scaler = _joblib.load(os.path.join(models_dir, "feature_scaler.pkl"))
+    scaler = joblib.load(os.path.join(models_dir, "feature_scaler.pkl"))
     X_all_sc = scaler.transform(X)
 
     xgb_all_preds = xgb_model.predict(X_all_sc)
