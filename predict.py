@@ -29,6 +29,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from src.features.feature_engineering import FeatureEngineer
 from src.models.ensemble import EnsembleModel
 from src.utils.data_loader import DataLoader
+from src.utils.results_exporter import append_predictions_to_main_csv
 
 logging.basicConfig(
     level=logging.INFO,
@@ -205,6 +206,11 @@ def _parse_args() -> argparse.Namespace:
         help="Save predictions to this CSV path (optional).",
     )
     parser.add_argument(
+        "--main-csv",
+        default="data/main.csv",
+        help="Append comprehensive results to this CSV file (default: data/main.csv).",
+    )
+    parser.add_argument(
         "--skip-lstm",
         action="store_true",
         help="Use only the XGBoost model (faster; no LSTM).",
@@ -241,3 +247,11 @@ if __name__ == "__main__":
         os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
         result_df.to_csv(args.output, index=False)
         logger.info("Predictions saved to %s", args.output)
+
+    # Always append to main.csv (creates the file if it does not exist)
+    append_predictions_to_main_csv(
+        raw_df=new_data,
+        predictions_df=result_df,
+        output_path=args.main_csv,
+    )
+    logger.info("Comprehensive results appended to %s", args.main_csv)
