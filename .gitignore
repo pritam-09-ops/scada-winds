@@ -1,0 +1,8 @@
+# Python .gitignore
+__pycache__/
+*.py[cod]
+.venv/
+.env
+*.egg-info/
+*.egg
+.DS_Store
