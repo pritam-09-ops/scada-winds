@@ -191,14 +191,6 @@ Contributions are welcome! Please feel free to:
 
 ---
 
-## 📞 Support & Contact
-
-For questions, issues, or suggestions, please:
-- Open an issue on GitHub
-- Contact the author
-
----
-
 ## 🎓 Citation
 
 If you use this project in your research, please cite:
